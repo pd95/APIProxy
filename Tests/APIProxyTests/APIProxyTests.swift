@@ -10,7 +10,7 @@ struct APIProxyTests {
             try await configure(app)
             try await test(app)
         } catch {
-try await app.asyncShutdown()
+            try await app.asyncShutdown()
             throw error
         }
         try await app.asyncShutdown()
