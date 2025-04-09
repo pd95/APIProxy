@@ -7,36 +7,42 @@ func routes(_ app: Application) throws {
     app.on(.POST, .catchall, use: { try await forwardRequest($0, app: app) })
 }
 
-func forwardRequest(_ request: Request, app: Application) async throws -> ClientResponse {
-    let client = app.client
+func forwardRequest(_ req: Request, app: Application) async throws -> Response {
+    //print(#function, req.url.path, req.method, req.body)
+    let response = Response(status: .ok) // real status will be async
 
-    // Copy all headers from the incoming request.
-    var forwardedHeaders = HTTPHeaders()
-    for (name, value) in request.headers {
-        forwardedHeaders.add(name: name, value: value)
-    }
+    response.body = Response.Body(stream: { writer in
+        var body: HTTPClient.Body?
+        if let data = req.body.data {
+            body = .byteBuffer(data)
+        }
 
-    app.logger.trace("Forwarding request to \(request.url.path)")
-    do {
-        let body = try await request.body.collect(upTo: .max)
-        print(#function, "received body: \(body.readableBytes) bytes")
+        do {
+            let request = try HTTPClient.Request(
+                url: "http://localhost:11434\(req.url.path)",
+                method: req.method,
+                headers: req.headers,
+                body: body
+            )
 
-        // Prepare a new client request to forward with the same properties as the original one.
-        let request = ClientRequest(
-            method: request.method,
-            url: URI(string: "http://localhost:11434\(request.url.path)"),
-            headers: forwardedHeaders,
-            body: body
-        )
+            //app.logger.info("Request: \(request.headers)")
 
-        print(#function, "sending request")
-        let response = try await client.send(request)
+            let delegate = ProxyStreamDelegate(writer: writer, logger: req.logger)
 
-        print(#function, "received response", response)
-        app.logger.trace("Returning response \(response.body?.description ?? "nil")")
-        return response
-    } catch {
-        app.logger.error("Error forwarding request: \(error)")
-        throw error
-    }
+            let httpClient = app.proxyService.httpClient
+            httpClient.execute(request: request, delegate: delegate)
+                .futureResult.whenComplete { result in
+                    switch result {
+                    case .success:
+                        req.logger.debug("success")
+                    case .failure(let error):
+                        req.logger.debug("error: \(error)")
+                    }
+                }
+        } catch {
+            _ = writer.write(.error(error))
+        }
+     })
+
+    return response
 }
