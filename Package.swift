@@ -14,7 +14,7 @@ let package = Package(
     ],
     targets: [
         .executableTarget(
-            name: "APIProxy",
+            name: "App",
             dependencies: [
                 .product(name: "Vapor", package: "vapor"),
                 .product(name: "NIOCore", package: "swift-nio"),
@@ -25,7 +25,7 @@ let package = Package(
         .testTarget(
             name: "APIProxyTests",
             dependencies: [
-                .target(name: "APIProxy"),
+                .target(name: "App"),
                 .product(name: "VaporTesting", package: "vapor"),
             ],
             swiftSettings: swiftSettings
