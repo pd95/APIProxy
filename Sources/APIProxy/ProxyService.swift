@@ -1,4 +1,5 @@
 import AsyncHTTPClient
+import NIOHTTP1
 import Vapor
 
 struct ProxyService: LifecycleHandler {
@@ -25,24 +26,43 @@ struct ProxyService: LifecycleHandler {
         //print(#function, req.url.path, req.method, req.body)
 
         let response = Response(status: .ok) // real status will be async
+        let httpClient = self.httpClient
+        let logger = req.logger
 
         response.body = Response.Body(stream: { writer in
-            var body: HTTPClient.Body?
-            if let data = req.body.data {
-                body = .byteBuffer(data)
-            }
-
             do {
+                var requestBody: HTTPClient.Body?
+                if let data = req.body.data {
+                    requestBody = .byteBuffer(data)
+                }
+
                 let request = try HTTPClient.Request(
                     url: "http://localhost:11434\(req.url.path)",
                     method: req.method,
                     headers: req.headers,
-                    body: body
+                    body: requestBody
                 )
 
-                //app.logger.info("Request: \(request.headers)")
-
-                let delegate = ProxyStreamDelegate(writer: writer, logger: req.logger)
+                let delegate = CallbackHTTPClientDelegate(
+                    onHead: { head in
+                        response.version = head.version
+                        response.status = head.status
+                        response.headers = head.headers
+                        logger.debug("HTTP Header: \(head.description)")
+                    },
+                    onBodyPart: { buffer in
+                        logger.debug("Body Part: \(String(buffer: buffer))")
+                        _ = writer.write(.buffer(buffer))
+                    },
+                    onError: { error in
+                        logger.debug("Request Received error: \(error)")
+                        _ = writer.write(.error(error))
+                    },
+                    onComplete: {
+                        logger.debug("Request Finished")
+                        _ = writer.write(.end)
+                    }
+                )
 
                 httpClient.execute(request: request, delegate: delegate)
                     .futureResult.whenComplete { result in
