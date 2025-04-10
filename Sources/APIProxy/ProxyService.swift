@@ -4,9 +4,11 @@ import Vapor
 
 struct ProxyService: LifecycleHandler {
     let httpClient: HTTPClient
+    let baseURL: String
 
     init(app: Application) {
         self.httpClient = HTTPClient(eventLoopGroupProvider: .shared(app.eventLoopGroup))
+        baseURL = Environment.get("TARGET_URL") ?? "http://localhost:11434"
     }
 
     func willBoot(_ app: Application) throws {
@@ -37,7 +39,7 @@ struct ProxyService: LifecycleHandler {
                 }
 
                 let request = try HTTPClient.Request(
-                    url: "http://localhost:11434\(req.url.path)",
+                    url: baseURL.appending(req.url.path),
                     method: req.method,
                     headers: req.headers,
                     body: requestBody
