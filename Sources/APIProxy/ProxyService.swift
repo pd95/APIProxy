@@ -35,18 +35,24 @@ struct ProxyService: LifecycleHandler {
 
         response.body = Response.Body(stream: { writer in
             do {
+                // Preparing body
                 var requestBody: HTTPClient.Body?
                 if let data = req.body.data {
                     requestBody = .byteBuffer(data)
                 }
 
+                // Preparing headers (whitout "Accept-Encoding")
+                var requestHeaders: HTTPHeaders = req.headers
+                requestHeaders.remove(name: .acceptEncoding)
+
                 let request = try HTTPClient.Request(
                     url: baseURL.appending(req.url.path),
                     method: req.method,
-                    headers: req.headers,
+                    headers: requestHeaders,
                     body: requestBody
                 )
 
+                // Preparing delegate
                 let delegate = HTTPClientRequestRecorder(
                     request: request,
                     requestBody: req.body.data,
@@ -70,6 +76,7 @@ struct ProxyService: LifecycleHandler {
                     }
                 )
 
+                logger.info("Sending Request \(request.method) \(request.url) with \(requestHeaders)")
                 httpClient.execute(request: request, delegate: delegate)
                     .futureResult
                     .whenComplete { result in
