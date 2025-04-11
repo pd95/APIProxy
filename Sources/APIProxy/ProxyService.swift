@@ -45,7 +45,9 @@ struct ProxyService: LifecycleHandler {
                     body: requestBody
                 )
 
-                let delegate = CallbackHTTPClientDelegate(
+                let delegate = HTTPClientRequestRecorder(
+                    request: request,
+                    requestBody: req.body.data,
                     onHead: { head in
                         response.version = head.version
                         response.status = head.status
@@ -67,10 +69,28 @@ struct ProxyService: LifecycleHandler {
                 )
 
                 httpClient.execute(request: request, delegate: delegate)
-                    .futureResult.whenComplete { result in
+                    .futureResult
+                    .whenComplete { result in
                         switch result {
-                        case .success:
-                            req.logger.debug("success")
+                        case .success(let replayableRequest):
+                            req.logger.debug("success:")
+
+                            Task {
+                                req.logger.info("=================")
+                                print(replayableRequest)
+
+                                if let httpResponse = replayableRequest.httpResponse(speedFactor: 1) {
+                                    print("replaying response")
+                                    var count = 0
+                                    for try await chunk in httpResponse.body {
+                                        count += 1
+                                        print(count, String(buffer: chunk).trimmingCharacters(in: .whitespacesAndNewlines))
+                                    }
+
+                                    print(count, "chunks received")
+                                }
+                            }
+
                         case .failure(let error):
                             req.logger.debug("error: \(error)")
                         }
