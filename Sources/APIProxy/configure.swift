@@ -8,6 +8,10 @@ public func configure(_ app: Application) async throws {
     // Register ProxyService lifecycle handler
     app.lifecycle.use(app.proxyService)
 
+    // Compression
+    app.http.server.configuration.responseCompression = .enabled
+    app.http.server.configuration.requestDecompression = .enabled
+
     // register routes
     try routes(app)
 }
