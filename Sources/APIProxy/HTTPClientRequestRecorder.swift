@@ -62,6 +62,7 @@ final class HTTPClientRequestRecorder: HTTPClientResponseDelegate {
 
     func didFinishRequest(task: HTTPClient.Task<ReplayableHTTPRequest>) throws -> ReplayableHTTPRequest {
         onComplete()
+        request.response?.endTime = clock.now
         return request
     }
 }
