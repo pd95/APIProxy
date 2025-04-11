@@ -72,6 +72,15 @@ extension ReplayableHTTPRequest: Codable {
 import AsyncHTTPClient
 
 extension ReplayableHTTPRequest {
+
+    func httpRequest() throws -> HTTPClientRequest {
+        var request = HTTPClientRequest(url: url.description)
+        request.headers = headers
+        request.method = method
+        request.body = body.map({ .bytes($0) })
+        return request
+    }
+
     func httpResponse(speedFactor: Double = 1) -> HTTPClientResponse? {
         guard let response, let startTime else { return nil }
 
