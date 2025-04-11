@@ -5,6 +5,8 @@ import Vapor
 struct ProxyService: LifecycleHandler {
     let httpClient: HTTPClient
     let baseURL: String
+    var writeFile = false
+    var simulateResponse = false
 
     init(app: Application) {
         self.httpClient = HTTPClient(eventLoopGroupProvider: .shared(app.eventLoopGroup))
@@ -77,17 +79,35 @@ struct ProxyService: LifecycleHandler {
 
                             Task {
                                 req.logger.info("=================")
-                                print(replayableRequest)
 
-                                if let httpResponse = replayableRequest.httpResponse(speedFactor: 1) {
-                                    print("replaying response")
-                                    var count = 0
-                                    for try await chunk in httpResponse.body {
-                                        count += 1
-                                        print(count, String(buffer: chunk).trimmingCharacters(in: .whitespacesAndNewlines))
+                                if writeFile {
+                                    do {
+                                        let data = try JSONEncoder().encode(replayableRequest)
+
+                                        let tempDirectoryURL = FileManager.default.temporaryDirectory
+                                        let fileName = "request-\(Date.now.formatted(.iso8601.timeZoneSeparator(.omitted).dateTimeSeparator(.standard).timeSeparator(.omitted))).json"
+                                        let fileURL = tempDirectoryURL.appendingPathComponent(fileName)
+
+                                        // Write data to the file at the specified URL
+                                        try data.write(to: fileURL)
+
+                                        req.logger.info("replayable request written to \(fileURL.path(percentEncoded: false))")
+                                    } catch {
+                                        req.logger.error("Failed to write file: \(error.localizedDescription)")
                                     }
+                                }
 
-                                    print(count, "chunks received")
+                                if simulateResponse {
+                                    if let httpResponse = replayableRequest.httpResponse(speedFactor: 1) {
+                                        print("replaying response")
+                                        var count = 0
+                                        for try await chunk in httpResponse.body {
+                                            count += 1
+                                            print(count, String(buffer: chunk).trimmingCharacters(in: .whitespacesAndNewlines))
+                                        }
+
+                                        print(count, "chunks received")
+                                    }
                                 }
                             }
 
