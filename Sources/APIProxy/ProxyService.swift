@@ -33,7 +33,7 @@ struct ProxyService: LifecycleHandler {
         let httpClient = self.httpClient
         let logger = req.logger
 
-        response.body = Response.Body(stream: { writer in
+        response.body = Response.Body(asyncStream: { writer in
             do {
                 // Preparing body
                 var requestBody: HTTPClient.Body?
@@ -64,15 +64,15 @@ struct ProxyService: LifecycleHandler {
                     },
                     onBodyPart: { buffer in
                         logger.debug("Body Part: \(String(buffer: buffer))")
-                        _ = writer.write(.buffer(buffer))
+                        Task { try await writer.writeBuffer(buffer) }
                     },
                     onError: { error in
                         logger.debug("Request Received error: \(error)")
-                        _ = writer.write(.error(error))
+                        Task { try await writer.write(.error(error)) }
                     },
                     onComplete: {
                         logger.debug("Request Finished")
-                        _ = writer.write(.end)
+                        Task { try await writer.write(.end) }
                     }
                 )
 
@@ -123,9 +123,9 @@ struct ProxyService: LifecycleHandler {
                         }
                     }
             } catch {
-                _ = writer.write(.error(error))
+                try await writer.write(.error(error))
             }
-         })
+        })
 
         return response
     }
