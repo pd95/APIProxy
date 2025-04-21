@@ -55,8 +55,8 @@ struct ProxyService: LifecycleHandler {
 
         // 3. Send the request
         logger.info("Sending Request \(request.method) \(request.url) with \(requestHeaders)")
-        httpClient.execute(request: request, delegate: delegate)
-            .futureResult
+        let executionTask = httpClient.execute(request: request, delegate: delegate)
+        executionTask.futureResult
             .whenComplete { result in
                 switch result {
                 case .success:
@@ -98,7 +98,7 @@ struct ProxyService: LifecycleHandler {
                     }
 
                 case .failure(let error):
-                    req.logger.debug("error: \(error)")
+                    req.logger.error("error: \(error)")
                 }
             }
 
@@ -141,6 +141,7 @@ struct ProxyService: LifecycleHandler {
                 } catch {
                     try? await writer.write(.error(error))
                     logger.error("Error reading from stream: \(error)")
+                    executionTask.cancel()
                     throw error
                 }
             })
