@@ -126,17 +126,23 @@ struct ProxyService: LifecycleHandler {
         // If the transimission is chunked, we have to gather all parts as an async body stream
         if isChunked {
             response.body = .init(asyncStream: { [delegateStream = delegate.stream] writer in
-                for try await event in delegateStream {
-                    if case .bodyPart(let buffer) = event {
-                        logger.debug("Writing Body Part: \(String(buffer: buffer))")
-                        await recorder.didReceive(buffer: buffer)
-                        try await writer.write(.buffer(buffer))
-                    } else {
-                        logger.error("An unexpected event was received: \(event)")
+                do {
+                    for try await event in delegateStream {
+                        if case .bodyPart(let buffer) = event {
+                            logger.debug("Writing Body Part: \(String(buffer: buffer))")
+                            await recorder.didReceive(buffer: buffer)
+                            try await writer.write(.buffer(buffer))
+                        } else {
+                            logger.error("An unexpected event was received: \(event)")
+                        }
                     }
+                    try await writer.write(.end)
+                    await recorder.didFinish()
+                } catch {
+                    try? await writer.write(.error(error))
+                    logger.error("Error reading from stream: \(error)")
+                    throw error
                 }
-                try await writer.write(.end)
-                await recorder.didFinish()
             })
 
         } else {
