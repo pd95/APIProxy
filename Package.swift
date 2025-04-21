@@ -20,6 +20,7 @@ let package = Package(
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOPosix", package: "swift-nio"),
             ],
+            path: "Sources/APIProxy",
             swiftSettings: swiftSettings
         ),
         .testTarget(
