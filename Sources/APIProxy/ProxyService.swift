@@ -56,51 +56,57 @@ struct ProxyService: LifecycleHandler {
         // 3. Send the request
         logger.info("Sending Request \(request.method) \(request.url) with \(requestHeaders)")
         let executionTask = httpClient.execute(request: request, delegate: delegate)
-        executionTask.futureResult
-            .whenComplete { result in
-                switch result {
-                case .success:
-                    req.logger.debug("success: start post processing")
+        Task {
+            do {
+                try await executionTask.futureResult.get()
+                try Task.checkCancellation()    // Check for task cancellation, because .get() does not!
 
-                    Task {
-                        req.logger.info("=================")
-                        let replayableRequest = await recorder.request
+                // Sleep a very short time to ensure recorder has been updated
+                try await Task.sleep(for: .milliseconds(10))
+                let replayableRequest = await recorder.request
 
-                        if writeFile {
-                            do {
-                                let data = try JSONEncoder().encode(replayableRequest)
-
-                                let tempDirectoryURL = FileManager.default.temporaryDirectory
-                                let fileName = "request-\(Date.now.formatted(.iso8601.timeZoneSeparator(.omitted).dateTimeSeparator(.standard).timeSeparator(.omitted))).json"
-                                let fileURL = tempDirectoryURL.appendingPathComponent(fileName)
-
-                                // Write data to the file at the specified URL
-                                try data.write(to: fileURL)
-
-                                req.logger.info("replayable request written to \(fileURL.path(percentEncoded: false))")
-                            } catch {
-                                req.logger.error("Failed to write file: \(error.localizedDescription)")
-                            }
-                        }
-
-                        if simulateResponse {
-                            if let httpResponse = replayableRequest.httpResponse(speedFactor: 1) {
-                                print("replaying response")
-                                var count = 0
-                                for try await chunk in httpResponse.body {
-                                    count += 1
-                                    print(count, String(buffer: chunk).trimmingCharacters(in: .whitespacesAndNewlines))
-                                }
-
-                                print(count, "chunks received")
-                            }
-                        }
-                    }
-
-                case .failure(let error):
-                    req.logger.error("error: \(error)")
+                if let response = replayableRequest.response {
+                    let endTime = response.endTime ?? replayableRequest.startTime
+                    let duration = endTime - replayableRequest.startTime
+                    logger.info("Request successfully processed. Response returned \(response.bodyChunks.count) chunks in \(duration)")
+                } else {
+                    logger.error("Request successfully processed, but no response recorded!")
                 }
+
+
+                if writeFile {
+                    do {
+                        let data = try JSONEncoder().encode(replayableRequest)
+
+                        let tempDirectoryURL = FileManager.default.temporaryDirectory
+                        let fileName = "request-\(Date.now.formatted(.iso8601.timeZoneSeparator(.omitted).dateTimeSeparator(.standard).timeSeparator(.omitted))).json"
+                        let fileURL = tempDirectoryURL.appendingPathComponent(fileName)
+
+                        // Write data to the file at the specified URL
+                        try data.write(to: fileURL)
+
+                        logger.info("replayable request written to \(fileURL.path(percentEncoded: false))")
+                    } catch {
+                        logger.error("Failed to write file: \(error.localizedDescription)")
+                    }
+                }
+
+                if simulateResponse {
+                    if let httpResponse = replayableRequest.httpResponse(speedFactor: 1) {
+                        print("replaying response")
+                        var count = 0
+                        for try await chunk in httpResponse.body {
+                            count += 1
+                            print(count, String(buffer: chunk).trimmingCharacters(in: .whitespacesAndNewlines))
+                        }
+
+                        print(count, "chunks received")
+                    }
+                }
+            } catch {
+                logger.error("Request failed: \(error)")
             }
+        }
 
         // 4. Wait for the head
         var responseStreamIterator = delegate.stream.makeAsyncIterator()
