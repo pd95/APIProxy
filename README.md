@@ -1,6 +1,4 @@
 # APIProxy
 
-A project to visualize the HTTP calls to an API with the goal to mock the API responses.
-This is my first Vapor project... created with the help of AI tools. 
-
-So bear in mind that it probably won't proper Vapor App stadards.
+A project to visualise the HTTP calls to an API with the goal of mocking the API responses.
+Created as my first Vapor project with assistance from AI tools, this application may not adhere strictly to all Vapor App standards but serves as a practical starting point for those interested in building similar solutions.
