@@ -19,6 +19,13 @@ struct ReplayableHTTPResponse {
     var chunkTime: [ContinuousClock.Instant] = []
     var endTime: ContinuousClock.Instant?
 
+    init(status: HTTPResponseStatus, headers: HTTPHeaders, version: HTTPVersion, headerTime: ContinuousClock.Instant) {
+        self.status = status
+        self.headers = headers
+        self.version = version
+        self.headerTime = headerTime
+    }
+
     mutating func append(bodyChunk: ByteBuffer, at time: ContinuousClock.Instant) {
         self.bodyChunks.append(bodyChunk)
         self.chunkTime.append(time)

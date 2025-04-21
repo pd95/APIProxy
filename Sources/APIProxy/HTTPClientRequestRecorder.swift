@@ -4,65 +4,47 @@
 //
 //  Created by Philipp on 09.04.2025.
 //
-import AsyncHTTPClient
+
+import NIOCore
 import NIOHTTP1
-import Vapor
 
-
-final class HTTPClientRequestRecorder: HTTPClientResponseDelegate {
-    typealias Response = ReplayableHTTPRequest
-
-    let onHead: (HTTPResponseHead) -> Void
-    let onBodyPart: (ByteBuffer) -> Void
-    let onError: (any Error) -> Void
-    let onComplete: () -> Void
-
+final actor HTTPClientRequestRecorder{
     var request: ReplayableHTTPRequest
-
-    private var buffers: [RequestReplayState] = []
 
     private let clock: ContinuousClock
     private let startTime: ContinuousClock.Instant
-    private var headerTime: ContinuousClock.Instant?
-    private var lastBodyPartTime: ContinuousClock.Instant?
 
     init(
-        request: HTTPClient.Request,
-        requestBody: ByteBuffer?,
-        onHead: @escaping (HTTPResponseHead) -> Void,
-        onBodyPart: @escaping (ByteBuffer) -> Void,
-        onError: @escaping (any Error) -> Void,
-        onComplete: @escaping () -> Void
+        url: String,
+        method: HTTPMethod = .GET,
+        headers: HTTPHeaders = [:],
+        body: ByteBuffer? = nil,
     ) {
         clock = ContinuousClock()
         startTime =  clock.now
-        self.request = ReplayableHTTPRequest(url: request.url, method: request.method, headers: request.headers, body: requestBody, startTime: startTime)
-        self.onHead = onHead
-        self.onBodyPart = onBodyPart
-        self.onError = onError
-        self.onComplete = onComplete
+        self.request = ReplayableHTTPRequest(
+            url: url,
+            method: method,
+            headers: headers,
+            body: body,
+            startTime: startTime
+        )
     }
 
-    func didReceiveHead(task: HTTPClient.Task<ReplayableHTTPRequest>, _ head: HTTPResponseHead) -> EventLoopFuture<Void> {
-        request.response = ReplayableHTTPResponse(status: head.status, headers: head.headers, version: head.version, headerTime: clock.now)
-        onHead(head)
-        return task.eventLoop.makeSucceededFuture(())
+    func didReceive(head: HTTPResponseHead) {
+        request.response = ReplayableHTTPResponse(
+            status: head.status,
+            headers: head.headers,
+            version: head.version,
+            headerTime: clock.now
+        )
     }
 
-    func didReceiveBodyPart(task: HTTPClient.Task<ReplayableHTTPRequest>, _ buffer: ByteBuffer) -> EventLoopFuture<Void> {
+    func didReceive(buffer: ByteBuffer) {
         request.response?.append(bodyChunk: buffer, at: clock.now)
-        onBodyPart(buffer)
-        return task.eventLoop.makeSucceededFuture(())
     }
 
-    func didReceiveError(task: HTTPClient.Task<ReplayableHTTPRequest>, _ error: any Error) -> EventLoopFuture<Void> {
-        onError(error)
-        return task.eventLoop.makeSucceededFuture(())
-    }
-
-    func didFinishRequest(task: HTTPClient.Task<ReplayableHTTPRequest>) throws -> ReplayableHTTPRequest {
-        onComplete()
+    func didFinish() {
         request.response?.endTime = clock.now
-        return request
     }
 }

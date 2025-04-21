@@ -9,20 +9,20 @@ import NIOCore
 import NIOHTTP1
 
 struct ReplayableHTTPRequest {
-    var url: URL
+    var url: String
     var method: HTTPMethod
     var headers: HTTPHeaders
     var body: ByteBuffer?
 
-    var startTime: ContinuousClock.Instant?
+    var startTime: ContinuousClock.Instant
     var response: ReplayableHTTPResponse?
 
     init(
-        url: URL,
+        url: String,
         method: HTTPMethod = .GET,
         headers: HTTPHeaders = [:],
         body: ByteBuffer? = nil,
-        startTime: ContinuousClock.Instant? = nil
+        startTime: ContinuousClock.Instant
     ) {
         self.method = method
         self.url = url
@@ -36,7 +36,7 @@ extension ReplayableHTTPRequest: Codable {
     init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.method = HTTPMethod(rawValue: try container.decode(String.self, forKey: .method))
-        self.url = try container.decode(URL.self, forKey: .url)
+        self.url = try container.decode(String.self, forKey: .url)
         self.headers = try container.decode(HTTPHeaders.self, forKey: .requestHeaders)
         if let requestBody = try container.decodeIfPresent(ByteBuffer?.self, forKey: .requestBody) {
             self.body = requestBody
@@ -82,7 +82,7 @@ extension ReplayableHTTPRequest {
     }
 
     func httpResponse(speedFactor: Double = 1) -> HTTPClientResponse? {
-        guard let response, let startTime else { return nil }
+        guard let response else { return nil }
 
         var currentTime = startTime
         var array = [RequestReplayState]()

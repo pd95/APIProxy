@@ -27,111 +27,135 @@ struct ProxyService: LifecycleHandler {
     }
 
     func forwardRequest(_ req: Request) async throws -> Response {
-        //print(#function, req.url.path, req.method, req.body)
-
-        let response = Response(status: .ok) // real status will be async
         let httpClient = self.httpClient
         let logger = req.logger
 
-        response.body = Response.Body(asyncStream: { writer in
-            do {
-                // Preparing body
-                var requestBody: HTTPClient.Body?
-                if let data = req.body.data {
-                    requestBody = .byteBuffer(data)
-                }
+        let recorder = HTTPClientRequestRecorder(
+            url: req.url.description,
+            method: req.method,
+            headers: req.headers,
+            body: req.body.data
+        )
 
-                // Preparing headers (whitout "Accept-Encoding")
-                var requestHeaders: HTTPHeaders = req.headers
-                requestHeaders.remove(name: .acceptEncoding)
+        // Preparing headers (whitout "Accept-Encoding")
+        var requestHeaders: HTTPHeaders = req.headers
+        requestHeaders.remove(name: .acceptEncoding)
 
-                let request = try HTTPClient.Request(
-                    url: baseURL.appending(req.url.path),
-                    method: req.method,
-                    headers: requestHeaders,
-                    body: requestBody
-                )
+        // 1. Build outgoing HTTPClient.Request
+        let url = baseURL.appending(req.url.path)
+        let request = try HTTPClient.Request(
+            url: url,
+            method: req.method,
+            headers: requestHeaders,
+            body: req.body.data.map { .byteBuffer($0) }
+        )
 
-                // Preparing delegate
-                let delegate = HTTPClientRequestRecorder(
-                    request: request,
-                    requestBody: req.body.data,
-                    onHead: { head in
-                        response.version = head.version
-                        response.status = head.status
-                        response.headers = head.headers
-                        logger.debug("HTTP Header: \(head.description)")
-                    },
-                    onBodyPart: { buffer in
-                        logger.debug("Body Part: \(String(buffer: buffer))")
-                        Task { try await writer.writeBuffer(buffer) }
-                    },
-                    onError: { error in
-                        logger.debug("Request Received error: \(error)")
-                        Task { try await writer.write(.error(error)) }
-                    },
-                    onComplete: {
-                        logger.debug("Request Finished")
-                        Task { try await writer.write(.end) }
-                    }
-                )
+        // 2. Create the delegate to stream the response
+        let delegate = HTTPStreamingResponseDelegate()
 
-                logger.info("Sending Request \(request.method) \(request.url) with \(requestHeaders)")
-                httpClient.execute(request: request, delegate: delegate)
-                    .futureResult
-                    .whenComplete { result in
-                        switch result {
-                        case .success(let replayableRequest):
-                            req.logger.debug("success:")
+        // 3. Send the request
+        logger.info("Sending Request \(request.method) \(request.url) with \(requestHeaders)")
+        httpClient.execute(request: request, delegate: delegate)
+            .futureResult
+            .whenComplete { result in
+                switch result {
+                case .success:
+                    req.logger.debug("success: start post processing")
 
-                            Task {
-                                req.logger.info("=================")
+                    Task {
+                        req.logger.info("=================")
+                        let replayableRequest = await recorder.request
 
-                                if writeFile {
-                                    do {
-                                        let data = try JSONEncoder().encode(replayableRequest)
+                        if writeFile {
+                            do {
+                                let data = try JSONEncoder().encode(replayableRequest)
 
-                                        let tempDirectoryURL = FileManager.default.temporaryDirectory
-                                        let fileName = "request-\(Date.now.formatted(.iso8601.timeZoneSeparator(.omitted).dateTimeSeparator(.standard).timeSeparator(.omitted))).json"
-                                        let fileURL = tempDirectoryURL.appendingPathComponent(fileName)
+                                let tempDirectoryURL = FileManager.default.temporaryDirectory
+                                let fileName = "request-\(Date.now.formatted(.iso8601.timeZoneSeparator(.omitted).dateTimeSeparator(.standard).timeSeparator(.omitted))).json"
+                                let fileURL = tempDirectoryURL.appendingPathComponent(fileName)
 
-                                        // Write data to the file at the specified URL
-                                        try data.write(to: fileURL)
+                                // Write data to the file at the specified URL
+                                try data.write(to: fileURL)
 
-                                        req.logger.info("replayable request written to \(fileURL.path(percentEncoded: false))")
-                                    } catch {
-                                        req.logger.error("Failed to write file: \(error.localizedDescription)")
-                                    }
-                                }
-
-                                if simulateResponse {
-                                    if let httpResponse = replayableRequest.httpResponse(speedFactor: 1) {
-                                        print("replaying response")
-                                        var count = 0
-                                        for try await chunk in httpResponse.body {
-                                            count += 1
-                                            print(count, String(buffer: chunk).trimmingCharacters(in: .whitespacesAndNewlines))
-                                        }
-
-                                        print(count, "chunks received")
-                                    }
-                                }
+                                req.logger.info("replayable request written to \(fileURL.path(percentEncoded: false))")
+                            } catch {
+                                req.logger.error("Failed to write file: \(error.localizedDescription)")
                             }
+                        }
 
-                        case .failure(let error):
-                            req.logger.debug("error: \(error)")
+                        if simulateResponse {
+                            if let httpResponse = replayableRequest.httpResponse(speedFactor: 1) {
+                                print("replaying response")
+                                var count = 0
+                                for try await chunk in httpResponse.body {
+                                    count += 1
+                                    print(count, String(buffer: chunk).trimmingCharacters(in: .whitespacesAndNewlines))
+                                }
+
+                                print(count, "chunks received")
+                            }
                         }
                     }
-            } catch {
-                try await writer.write(.error(error))
+
+                case .failure(let error):
+                    req.logger.debug("error: \(error)")
+                }
             }
-        })
+
+        // 4. Wait for the head
+        var responseStreamIterator = delegate.stream.makeAsyncIterator()
+        guard case .head(let responseHead) = try await responseStreamIterator.next() else {
+            throw Abort(.badGateway, reason: "Expected HTTP response head but didn't receive it.")
+        }
+        await recorder.didReceive(head: responseHead)
+
+
+        // 5. Build the Response
+        var headers = HTTPHeaders()
+        var isChunked = false
+        for (name, value) in responseHead.headers {
+            headers.replaceOrAdd(name: name, value: value)
+            if name.lowercased() == "transfer-encoding",
+               value.lowercased().contains("chunked") {
+                isChunked = true
+            }
+        }
+
+        let response = Response(status: responseHead.status, headers: headers)
+
+        // If the transimission is chunked, we have to gather all parts as an async body stream
+        if isChunked {
+            response.body = .init(asyncStream: { [delegateStream = delegate.stream] writer in
+                for try await event in delegateStream {
+                    if case .bodyPart(let buffer) = event {
+                        logger.debug("Writing Body Part: \(String(buffer: buffer))")
+                        await recorder.didReceive(buffer: buffer)
+                        try await writer.write(.buffer(buffer))
+                    } else {
+                        logger.error("An unexpected event was received: \(event)")
+                    }
+                }
+                try await writer.write(.end)
+                await recorder.didFinish()
+            })
+
+        } else {
+            // If it is following directly the header: gather the data and create a full response body
+            var fullBody = ByteBufferAllocator().buffer(capacity: 0)
+            while case .bodyPart(var buffer) = try await responseStreamIterator.next() {
+                await recorder.didReceive(buffer: buffer)
+                fullBody.writeBuffer(&buffer)
+            }
+            await recorder.didFinish()
+
+            response.body = .init(buffer: fullBody)
+        }
 
         return response
     }
 }
 
-// Store globally in app
+// Store ProxyService  globally in app
 extension Application {
     private struct ProxyServiceKey: StorageKey {
         typealias Value = ProxyService
