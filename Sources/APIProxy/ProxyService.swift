@@ -55,6 +55,7 @@ struct ProxyService: LifecycleHandler {
 
         // 3. Send the request
         logger.info("Sending Request \(request.method) \(request.url) with \(requestHeaders)")
+        logger.debug("Body: \(req.body.description)")
         let executionTask = httpClient.execute(request: request, delegate: delegate)
         Task {
             do {
