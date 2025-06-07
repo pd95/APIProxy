@@ -14,4 +14,7 @@ public func configure(_ app: Application) async throws {
 
     // register routes
     try routes(app)
+
+    // Configure upper limit for body
+    app.routes.defaultMaxBodySize = "1mb"
 }
