@@ -1,0 +1,27 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:APIProxy}",
+            "name": "Debug App",
+            "target": "App",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug App",
+            "env": {
+                "LOG_LEVEL": "DEBUG"
+            }
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:APIProxy}",
+            "name": "Release App",
+            "target": "App",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release App"
+        }
+    ]
+}
