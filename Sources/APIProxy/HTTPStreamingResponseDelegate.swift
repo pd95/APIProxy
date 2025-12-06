@@ -28,7 +28,7 @@ final class HTTPStreamingResponseDelegate: HTTPClientResponseDelegate {
     }
 
     func didReceiveHead(task: HTTPClient.Task<Void>, _ head: HTTPResponseHead) -> EventLoopFuture<Void> {
-        task.logger.debug("HTTP Header: \(head.description)")
+        task.logger.trace("HTTP Header: \(head.description)")
         continuation.onTermination = { reason in
             if case .cancelled = reason {
                 task.cancel()
@@ -40,7 +40,7 @@ final class HTTPStreamingResponseDelegate: HTTPClientResponseDelegate {
     }
 
     func didReceiveBodyPart(task: HTTPClient.Task<Void>, _ buffer: ByteBuffer) -> EventLoopFuture<Void> {
-        task.logger.debug("Body Part: \(String(buffer: buffer))")
+        task.logger.trace("Body Part: \(String(buffer: buffer))")
         continuation.yield(.bodyPart(buffer))
         return task.eventLoop.makeSucceededFuture(())
     }
@@ -51,7 +51,7 @@ final class HTTPStreamingResponseDelegate: HTTPClientResponseDelegate {
     }
 
     func didFinishRequest(task: HTTPClient.Task<Void>) throws {
-        task.logger.debug("Request Finished")
+        task.logger.trace("Request Finished")
         continuation.finish()
     }
 }

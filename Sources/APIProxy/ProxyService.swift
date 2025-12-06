@@ -5,10 +5,12 @@ import Vapor
 struct ProxyService: LifecycleHandler {
     let httpClient: HTTPClient
     let baseURL: String
+    let logger: OllamaLogger
 
     init(app: Application) {
         self.httpClient = HTTPClient(eventLoopGroupProvider: .shared(app.eventLoopGroup))
         self.baseURL = Environment.get("TARGET_URL") ?? "http://localhost:11434"
+        self.logger = OllamaLogger()
     }
 
     func willBoot(_ app: Application) throws {
@@ -32,7 +34,8 @@ struct ProxyService: LifecycleHandler {
             url: req.url.description,
             method: req.method,
             headers: req.headers,
-            body: req.body.data
+            body: req.body.data,
+            logger: self.logger
         )
 
         // Preparing headers (whitout "Accept-Encoding")
@@ -52,8 +55,8 @@ struct ProxyService: LifecycleHandler {
         let delegate = HTTPStreamingResponseDelegate()
 
         // 3. Send the request
-        logger.info("Sending Request \(request.method) \(request.url) with \(requestHeaders)")
-        logger.debug("Body: \(req.body.description)")
+        logger.trace("Sending Request \(request.method) \(request.url) with \(requestHeaders)")
+        logger.trace("Body: \(req.body.description)")
         let executionTask = httpClient.execute(request: request, delegate: delegate)
         Task {
             do {
@@ -67,9 +70,9 @@ struct ProxyService: LifecycleHandler {
                 if let response = replayableRequest.response {
                     let endTime = response.endTime ?? replayableRequest.startTime
                     let duration = endTime - replayableRequest.startTime
-                    logger.info("Request successfully processed. Response returned \(response.bodyChunks.count) chunks in \(duration)")
+                    logger.trace("Request successfully processed. Response returned \(response.bodyChunks.count) chunks in \(duration)")
                 } else {
-                    logger.error("Request successfully processed, but no response recorded!")
+                    logger.warning("Request successfully processed, but no response recorded!")
                 }
             } catch {
                 logger.error("Request failed: \(error)")
@@ -103,7 +106,7 @@ struct ProxyService: LifecycleHandler {
                 do {
                     for try await event in delegateStream {
                         if case .bodyPart(let buffer) = event {
-                            logger.debug("Writing Body Part: \(String(buffer: buffer))")
+                            logger.trace("Writing Body Part: \(String(buffer: buffer))")
                             await recorder.didReceive(buffer: buffer)
                             try await writer.write(.buffer(buffer))
                         } else {

@@ -13,12 +13,14 @@ final actor HTTPClientRequestRecorder{
 
     private let clock: ContinuousClock
     private let startTime: ContinuousClock.Instant
+    private let logger: OllamaLogger
 
     init(
         url: String,
         method: HTTPMethod = .GET,
         headers: HTTPHeaders = [:],
         body: ByteBuffer? = nil,
+        logger: OllamaLogger
     ) {
         clock = ContinuousClock()
         startTime =  clock.now
@@ -29,22 +31,31 @@ final actor HTTPClientRequestRecorder{
             body: body,
             startTime: startTime
         )
+        self.logger = logger
+
+        logger.log(request: request)
     }
 
     func didReceive(head: HTTPResponseHead) {
-        request.response = ReplayableHTTPResponse(
+        let response = ReplayableHTTPResponse(
             status: head.status,
             headers: head.headers,
             version: head.version,
             headerTime: clock.now
         )
+        request.response = response
+        logger.log(response: response)
     }
 
     func didReceive(buffer: ByteBuffer) {
         request.response?.append(bodyChunk: buffer, at: clock.now)
+        logger.log(buffer: buffer)
     }
 
     func didFinish() {
         request.response?.endTime = clock.now
+        if let response = request.response {
+            logger.log(fullResponse: response)
+        }
     }
 }
