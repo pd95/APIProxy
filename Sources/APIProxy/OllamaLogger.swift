@@ -13,11 +13,18 @@ struct OllamaLogger {
 
     static let logger = Logger(label: "OllamaAPI")
 
-    func log(request: ReplayableHTTPRequest) {
-        Self.logger.info("REQ: \(request.method) \(request.url)")
+    let method: String
+    let url: String
 
-        request.body.map { 
-            log(buffer: $0)
+    init(method: String, uri: String) {
+        self.method = method
+        self.url = uri
+        Self.logger.info("REQ: \(method) \(url)")
+    }
+
+    func log(request: ReplayableHTTPRequest) {
+        if let data = request.body {
+            log(buffer: data)
         }
     }
 

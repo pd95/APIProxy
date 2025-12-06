@@ -5,12 +5,10 @@ import Vapor
 struct ProxyService: LifecycleHandler {
     let httpClient: HTTPClient
     let baseURL: String
-    let logger: OllamaLogger
 
     init(app: Application) {
         self.httpClient = HTTPClient(eventLoopGroupProvider: .shared(app.eventLoopGroup))
         self.baseURL = Environment.get("TARGET_URL") ?? "http://localhost:11434"
-        self.logger = OllamaLogger()
     }
 
     func willBoot(_ app: Application) throws {
@@ -35,7 +33,7 @@ struct ProxyService: LifecycleHandler {
             method: req.method,
             headers: req.headers,
             body: req.body.data,
-            logger: self.logger
+            logger: OllamaLogger(method: req.method.rawValue, uri: req.url.description)
         )
 
         // Preparing headers (whitout "Accept-Encoding")
