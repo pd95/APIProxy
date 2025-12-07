@@ -13,14 +13,13 @@ final actor HTTPClientRequestRecorder{
 
     private let clock: ContinuousClock
     private let startTime: ContinuousClock.Instant
-    private let logger: OllamaLogger
+    private var logger: OllamaLogger
 
     init(
         url: String,
         method: HTTPMethod = .GET,
         headers: HTTPHeaders = [:],
-        body: ByteBuffer? = nil,
-        logger: OllamaLogger
+        body: ByteBuffer? = nil
     ) {
         clock = ContinuousClock()
         startTime =  clock.now
@@ -31,8 +30,7 @@ final actor HTTPClientRequestRecorder{
             body: body,
             startTime: startTime
         )
-        self.logger = logger
-
+        logger = OllamaLogger(method: method.rawValue, uri: url.description)
         logger.log(request: request)
     }
 
@@ -49,7 +47,7 @@ final actor HTTPClientRequestRecorder{
 
     func didReceive(buffer: ByteBuffer) {
         request.response?.append(bodyChunk: buffer, at: clock.now)
-        logger.log(buffer: buffer)
+        logger.append(buffer: buffer)
     }
 
     func didFinish() {

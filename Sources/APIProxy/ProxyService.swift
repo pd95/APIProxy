@@ -32,8 +32,7 @@ struct ProxyService: LifecycleHandler {
             url: req.url.description,
             method: req.method,
             headers: req.headers,
-            body: req.body.data,
-            logger: OllamaLogger(method: req.method.rawValue, uri: req.url.description)
+            body: req.body.data
         )
 
         // Preparing headers (whitout "Accept-Encoding")

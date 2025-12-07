@@ -5,122 +5,279 @@
 //  Created by Philipp on 06.12.2025.
 //
 
-import NIOCore
 import Logging
-import Foundation
+import Vapor
 
-private extension ByteBuffer {
-    mutating func readDataUntilNewline() -> Data? {
-        guard let index = self.readableBytesView.firstIndex(of: 10) else {
-            return nil
-        }
-
-        let length = index - self.readerIndex
-        let data = self.readData(length: length)
-        _ = self.readBytes(length: 1) // das "\n" konsumieren
-
-        return data
-    }
+extension HTTPMediaType {
+    static let eventStream = HTTPMediaType(type: "text", subType: "event-stream", parameters: ["charset": "utf-8"])
+    static let ndjson = HTTPMediaType(type: "application", subType: "x-ndjson", parameters: ["charset": "utf-8"])
 }
 
-struct OllamaLogger {
+class OllamaLogger {
 
     static let logger = {
         var logger = Logger(label: "OllamaAPI")
-        logger.logLevel = .info
+        logger.logLevel = .debug
         return logger
     }()
 
     let method: String
     let url: String
 
+    private let isOpenAICompatibility: Bool
+    private var contentType: HTTPMediaType = .plainText
+    private var partialBuffer = ByteBuffer()
+    private var needsNewline: Bool = false
+
     init(method: String, uri: String) {
         self.method = method
         self.url = uri
-        Self.logger.info("REQ: \(method) \(url)")
+        self.isOpenAICompatibility = uri.prefix(3) == "/v1"
+    }
+
+    // Private "print-helper"
+    private func print(_ string: String, terminator: String = "\n") {
+        if terminator != "\n" {
+            needsNewline = true
+        } else {
+            if needsNewline {
+                Swift.print("")
+                needsNewline = false
+            }
+        }
+        Swift.print(string, terminator: terminator)
     }
 
     func log(request: ReplayableHTTPRequest) {
-        if let data = request.body {
-            log(buffer: data)
-        }
-    }
-
-    func log(buffer: ByteBuffer) {
-        let isOpenAICompatibility = url.prefix(3) == "/v1"
-        var readBuffer = buffer
-
-        // Some requests start with a plain text prefix
-        if isOpenAICompatibility && readBuffer.getString(at: 0, length: 5) == "data:" {
-            readBuffer.moveReaderIndex(forwardBy: 5)
-        }
-        guard let bodyData = readBuffer.readDataUntilNewline() ?? readBuffer.readData(length: readBuffer.readableBytes),
-              let json = try? JSONSerialization.jsonObject(with: bodyData, options: [])
-        else {
-            print()
-            Self.logger.error("Invalid JSON Data: \(buffer.getString(at: 0, length: buffer.readableBytes) ?? "")")
-            return // not a valid JSON response or possibly only part of the message
-        }
-
-        Self.logger.debug("json: \(json)")
-
-        guard let jsonObject = json as? [String: Any] else {
-            Self.logger.error("\(url) returned not a JSON object: \(json)")
-            return
-        }
-
-
-        if isOpenAICompatibility {
-            let object = jsonObject["object"] as? String
-            if object == "chat.completion.chunk" {
-                if let message = (jsonObject["choices"] as? [[String: Any]])?[0],
-                   let delta = message["delta"] as? [String: Any]
-                {
-                    if let content = delta["content"] as? String {
-                        print(content, terminator: "")
-                    }
-                    if let content = message["content"] as? String {
-                        print(content, terminator: "")
-                    }
-                }
-            }
-        } else {
-            if let message = jsonObject["message"] as? [String: Any],
-               let done = jsonObject["done"] as? Bool,
-               done == false
-            {
-                if let content = message["thinking"] as? String {
-                    print(content, terminator: "")
-                }
-                if let content = message["content"] as? String {
-                    print(content, terminator: "")
-                }
-            }
-        }
-
-        if readBuffer.readableBytes > 1 {
-            print("")
+        contentType = request.headers.contentType ?? .plainText
+        Self.logger.info("REQ: \(method) \(url) \(contentType.description)")
+        if let data = request.body, contentType == .json {
+            log(buffer: data, isRequest: true)
         }
     }
 
     func log(response: ReplayableHTTPResponse) {
-        Self.logger.info("RSP starting: \(response.status.description)")
+        contentType = response.headers.contentType ?? .plainText
+        Self.logger.info("RSP starting: \(response.status.description) \(contentType.description)")
+    }
+
+
+    func append(buffer chunk: ByteBuffer) {
+        var chunk = chunk
+        partialBuffer.writeBuffer(&chunk)
+
+        // handle content type specific logging
+        switch contentType {
+        case .eventStream:
+
+            // Search for event boundary, returning offset and boundary length
+            while let (offset, sepLen) = findEventBoundary(in: partialBuffer) {
+                // consume bytes by reading slice up to boundary
+                guard let eventSlice = partialBuffer.readSlice(length: offset) else {
+                    break
+                }
+                // Skip separator length
+                _ = partialBuffer.readSlice(length: sepLen)
+
+                log(event: eventSlice)
+            }
+        case .ndjson:
+
+            while let offset = findNewline(in: partialBuffer) {
+                guard let slice = partialBuffer.readSlice(length: offset) else {
+                    break
+                }
+                _ = partialBuffer.readSlice(length: 1)
+
+                log(buffer: slice)
+            }
+        default:
+            break
+        }
+
+        // Optional: protect against puffer bloat
+        let maxBufferBytes = 10 * 1024 * 1024
+        if partialBuffer.readableBytes > maxBufferBytes {
+            Self.logger.warning("Warning: event buffer exceeded \(maxBufferBytes) bytes — dropping buffer to avoid OOM")
+            partialBuffer.clear()
+        }
+    }
+
+    private func findNewline(in buffer: ByteBuffer) -> Int? {
+        let view = buffer.readableBytesView
+        let count = view.count
+        if count == 0 { return nil }
+
+        for i in 0...count - 1 {
+            let d = view[view.index(view.startIndex, offsetBy: i)]
+            if d == 0x0A {
+                return i
+            }
+        }
+
+        return nil
+    }
+
+    private func findEventBoundary(in buffer: ByteBuffer) -> (offset: Int, length: Int)? {
+        let view = buffer.readableBytesView
+        let count = view.count
+        if count == 0 { return nil }
+
+        // Für Performance: wir indexieren über die Collection-Offsets
+        // Prüfen auf CRLFCRLF (\r\n\r\n) zuerst (4 Bytes)
+        if count >= 4 {
+            for i in 0...count - 4 {
+                let a = view[view.index(view.startIndex, offsetBy: i)]
+                let b = view[view.index(view.startIndex, offsetBy: i+1)]
+                let c = view[view.index(view.startIndex, offsetBy: i+2)]
+                let d = view[view.index(view.startIndex, offsetBy: i+3)]
+                if a == 0x0D && b == 0x0A && c == 0x0D && d == 0x0A {
+                    return (i, 4)
+                }
+            }
+        }
+
+        // Prüfen auf LF LF (\n\n) (2 Bytes)
+        if count >= 2 {
+            for i in 0...count - 2 {
+                let a = view[view.index(view.startIndex, offsetBy: i)]
+                let b = view[view.index(view.startIndex, offsetBy: i+1)]
+                if a == 0x0A && b == 0x0A || a == 0x0D && b == 0x0D {
+                    return (i, 2)
+                }
+            }
+        }
+
+        return nil
+    }
+
+    private func log(event buffer: ByteBuffer, isRequest: Bool = false) {
+        guard let string = buffer.getString(at: buffer.readerIndex, length: buffer.readableBytes),
+              let event = SSEEvent.parseSSEEvent(from: string)
+        else {
+            print("Could not extract SSEvent from buffer")
+            print(buffer.getString(at: buffer.readerIndex, length: buffer.readableBytes) ?? "")
+            return
+        }
+
+        guard event.data != "[DONE]" else { return }
+        if let jsonObject = try? AnyJSON(string: event.data) {
+            log(json: jsonObject, underLyingBuffer: buffer, isRequest: isRequest)
+        } else {
+            Self.logger.error("Invalid JSON object: \(buffer.getString(at: 0, length: buffer.readableBytes) ?? "n/a")")
+        }
+    }
+
+    private func log(buffer: ByteBuffer, isRequest: Bool = false) {
+        guard let jsonObject = try? AnyJSON(buffer: buffer) else {
+            Self.logger.error("Invalid JSON object: \(buffer.getString(at: 0, length: buffer.readableBytes) ?? "n/a")")
+            return
+        }
+
+        log(json: jsonObject, underLyingBuffer: buffer, isRequest: isRequest)
+    }
+
+    private func log(json jsonObject: AnyJSON, underLyingBuffer buffer: ByteBuffer, isRequest: Bool = false) {
+
+        if isOpenAICompatibility {
+            if isRequest {
+                if let prompt = jsonObject.prompt.optionalString {
+                    print(prompt)
+                } else if let message = jsonObject.messages.array.last {
+                    let role = message.role.string
+                    let content = message.content.string
+                    if role == "tool" {
+                        let output = (try? AnyJSON(string: content))?.output.string ?? "<couldn't parse output>"
+                        print("🛠️ tool call output (\(message.tool_call_id.string)) -------------------- 8< --------------------\n\(output)\n🛠️ (\(message.tool_call_id.string)) --------------------8<--------------------")
+                    } else {
+                        print("\(role): \(content)\n")
+                    }
+//                } else if let content = jsonObject.messages.array.last?.content.string {
+//                    print(content)
+                } else {
+                    Self.logger.debug("unknown json: \(buffer.getString(at: 0, length: buffer.readableBytes) ?? "")")
+                }
+            } else {
+                let object = jsonObject.object.string
+
+                if object == "list", let models = jsonObject.data.optionalArray {
+                    print("\(models.count) models returned")
+
+                } else if object == "chat.completion.chunk" {
+                    if let toolCalls = jsonObject.choices.first?.delta.tool_calls.optionalArray {
+                        print("Tool calls")
+                        for toolCall in toolCalls {
+                            let type = toolCall.function.name.string
+                            var arguments = toolCall.function.arguments.string
+                            if type == "shell" {
+                                if let parsedArguments = (try? AnyJSON(string: arguments))?.command.array.map(\.string) {
+                                    arguments = "\"\(parsedArguments.joined(separator: " "))\""
+                                }
+                            }
+                            print("🛠️ tool call \(toolCall.id.string): \(type)  \(arguments)")
+                        }
+                    } else if let reasoning = jsonObject.choices.first?.delta.reasoning.optionalString {
+                        print(reasoning, terminator: "")
+                    } else if let content = jsonObject.choices.first?.delta.content.optionalString {
+                        print(content, terminator: "")
+                    } else {
+                        Self.logger.debug("unknown json: \(buffer.getString(at: 0, length: buffer.readableBytes) ?? "")")
+                    }
+                } else if object == "chat.completion" {
+                    if let text = jsonObject.choices.first?.message.content.string {
+                        print(text)
+                    } else {
+                        Self.logger.debug("unknown json: \(buffer.getString(at: 0, length: buffer.readableBytes) ?? "")")
+                    }
+                } else if object == "text_completion" {
+                    if let text = jsonObject.choices.first?.text.string {
+                        print(text)
+                    } else {
+                        Self.logger.debug("unknown json: \(buffer.getString(at: 0, length: buffer.readableBytes) ?? "")")
+                    }
+                } else {
+                    Self.logger.debug("unknown json: \(buffer.getString(at: 0, length: buffer.readableBytes) ?? "")")
+                }
+            }
+//        } else {
+//            if url == "/api/version" {
+//                if let version = jsonObject["version"] as? String {
+//                    print(version)
+//                }
+//            } else if url == "/api/tags" {
+//                if let models = jsonObject["models"] as? [[String: Any]] {
+//                    print("\(models.count) models returned")
+//                }
+//            } else {
+//                if let message = jsonObject["message"] as? [String: Any], let done = jsonObject["done"] as? Bool, !done {
+//                    if let content = message["thinking"] as? String {
+//                        print(content, terminator: "")
+//                    }
+//                    if let content = message["content"] as? String {
+//                        print(content, terminator: "")
+//                    }
+//                }
+//            }
+        }
+    }
+
+    private func log(text buffer: ByteBuffer, isRequest: Bool = false) {
+        let string = buffer.getString(at: 0, length: buffer.readableBytes)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if string.isEmpty == false {
+            print(string)
+        }
     }
 
     func log(fullResponse response: ReplayableHTTPResponse) {
-        let total = response.bodyChunks.reduce(0) { $0 + $1.readableBytes }
-        var data = Data(capacity: total)
-        response.bodyChunks.forEach {
-            data.append(contentsOf: $0.readableBytesView)
-        }
-        if let jsonObject: [String : Any] = try? JSONSerialization.jsonObject(with: data, options: []) as? [String: Any] {
-            //print(jsonObject)
-            if let message = jsonObject["message"] as? [String: Any] {
-                if let content = message["content"] as? String {
-                    print(content, terminator: "")
-                }
-                print()
-            }
+        switch contentType {
+        case .eventStream, .ndjson:
+            print("")  // add terminator
+        case .json:
+            log(buffer: partialBuffer)
+        case .plainText:
+            log(text: partialBuffer)
+        default:
+            Self.logger.warning("Unknown content-type: \(contentType.description)")
         }
         Self.logger.info("RSP completed: \(response.status.description)")
     }
